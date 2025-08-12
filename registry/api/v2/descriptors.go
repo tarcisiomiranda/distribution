@@ -1609,4 +1609,34 @@ var routeDescriptors = []RouteDescriptor{
 			},
 		},
 	},
+  {
+    Name:        RouteNameRepositoryCleanup,
+    Path:        "/v2/{name:" + reference.NameRegexp.String() + "}/_admin/cleanup",
+    Entity:      "RepositoryCleanup",
+    Description: "Non-standard: Delete repository directory if empty (admin only)",
+    Methods: []MethodDescriptor{
+      {
+        Method:      http.MethodDelete,
+        Description: "Delete empty repository directory for `name`.",
+        Requests: []RequestDescriptor{
+          {
+            Headers: []ParameterDescriptor{
+              hostHeader,
+              authHeader,
+            },
+            PathParameters: []ParameterDescriptor{
+              nameParameterDescriptor,
+            },
+            Successes: []ResponseDescriptor{{StatusCode: http.StatusAccepted}},
+            Failures: []ResponseDescriptor{
+              unauthorizedResponseDescriptor,
+              repositoryNotFoundResponseDescriptor,
+              deniedResponseDescriptor,
+              tooManyRequestsDescriptor,
+            },
+          },
+        },
+      },
+    },
+  },
 }

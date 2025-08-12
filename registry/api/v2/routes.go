@@ -16,6 +16,9 @@ const (
 	RouteNameBlobUpload      = "blob-upload"
 	RouteNameBlobUploadChunk = "blob-upload-chunk"
 	RouteNameCatalog         = "catalog"
+  // RouteNameRepositoryCleanup is a non-standard admin endpoint to delete an
+  // empty repository directory. It is opt-in and guarded by auth + config.
+  RouteNameRepositoryCleanup = "repository-cleanup"
 )
 
 var (

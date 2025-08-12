@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+    "io"
 	"expvar"
 	"fmt"
 	"math"
@@ -40,6 +41,7 @@ import (
 	storagemiddleware "github.com/distribution/distribution/v3/registry/storage/driver/middleware"
 	"github.com/distribution/distribution/v3/version"
 	"github.com/distribution/reference"
+    "github.com/opencontainers/go-digest"
 	events "github.com/docker/go-events"
 	"github.com/docker/go-metrics"
 	"github.com/gorilla/mux"
@@ -109,6 +111,8 @@ func NewApp(ctx context.Context, config *configuration.Configuration) *App {
 	app.register(v2.RouteNameBlob, blobDispatcher)
 	app.register(v2.RouteNameBlobUpload, blobUploadDispatcher)
 	app.register(v2.RouteNameBlobUploadChunk, blobUploadDispatcher)
+    // Non-standard: administrative endpoint to clean up an empty repository directory
+	app.register(v2.RouteNameRepositoryCleanup, repositoryCleanupDispatcher)
 
 	// override the storage driver's UA string for registry outbound HTTP requests
 	storageParams := config.Storage.Parameters()
@@ -476,6 +480,79 @@ func (app *App) register(routeName string, dispatch dispatchFunc) {
 	// control over the request execution.
 
 	app.router.GetRoute(routeName).Handler(handler)
+}
+
+// repositoryCleanupDispatcher implements a non-standard admin endpoint to remove
+// empty repository directories. It requires deletion enabled and DELETE permission.
+func repositoryCleanupDispatcher(ctx *Context, r *http.Request) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // Allow only DELETE and only when not running as cache or in read-only mode
+        if r.Method != http.MethodDelete || ctx.App.isCache || ctx.App.readOnly {
+            ctx.Errors = append(ctx.Errors, errcode.ErrorCodeUnsupported)
+            return
+        }
+
+        // Ensure deletion is enabled via configuration
+        if d, ok := ctx.App.Config.Storage["delete"]; !ok {
+            ctx.Errors = append(ctx.Errors, errcode.ErrorCodeUnsupported)
+            return
+        } else {
+            if e, ok := d["enabled"]; !ok {
+                ctx.Errors = append(ctx.Errors, errcode.ErrorCodeUnsupported)
+                return
+            } else if enabled, ok := e.(bool); !ok || !enabled {
+                ctx.Errors = append(ctx.Errors, errcode.ErrorCodeUnsupported)
+                return
+            }
+        }
+
+        // Require a remover implementation
+        if ctx.App.repoRemover == nil {
+            ctx.Errors = append(ctx.Errors, errcode.ErrorCodeUnsupported)
+            return
+        }
+
+        // The standard dispatcher resolves `ctx.Repository` and authorization when `name` is required.
+        if ctx.Repository == nil {
+            ctx.Errors = append(ctx.Errors, errcode.ErrorCodeNameUnknown)
+            return
+        }
+
+        // Safety: remove only when there are no tags nor manifests (logically empty repository).
+        // First, check tags.
+        tagsService := ctx.Repository.Tags(ctx)
+        tags, err := tagsService.All(ctx)
+        if err == nil && len(tags) > 0 {
+            // Repository is not logically empty
+            w.WriteHeader(http.StatusConflict)
+            return
+        }
+
+        // Then, check for manifests
+        manifestsSvc, err := ctx.Repository.Manifests(ctx)
+        if err == nil {
+            if enumerator, ok := manifestsSvc.(distribution.ManifestEnumerator); ok {
+                found := false
+                _ = enumerator.Enumerate(ctx, func(d digest.Digest) error {
+                    found = true
+                    return io.EOF
+                })
+                if found {
+                    w.WriteHeader(http.StatusConflict)
+                    return
+                }
+            }
+        }
+
+        // Finally, remove via RepositoryRemover which deletes the directory
+        if err := ctx.RepositoryRemover.Remove(ctx, ctx.Repository.Named()); err != nil {
+            // If not found, report 404 via errcode
+            ctx.Errors = append(ctx.Errors, errcode.ErrorCodeNameUnknown.WithDetail(err))
+            return
+        }
+
+        w.WriteHeader(http.StatusAccepted)
+    })
 }
 
 // configureEvents prepares the event sink for action.
