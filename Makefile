@@ -72,6 +72,13 @@ build: ## build go packages
 image: ## build docker image IMAGE_NAME=<name>
 	docker buildx bake --set "*.tags=${IMAGE_NAME}" image-local
 
+.PHONY: image-push image-all-push
+image-push: ## build and push docker image to remote registry (IMAGE_NAME=<repo:tag>)
+	docker buildx bake --push --set "*.tags=${IMAGE_NAME}" image
+
+image-all-push: ## multi-arch build and push (amd64, arm64, arm/v6, arm/v7, ppc64le, s390x, riscv64)
+	docker buildx bake --push --set "*.tags=${IMAGE_NAME}" image-all
+
 clean: ## clean up binaries
 	@echo "$(WHALE) $@"
 	@rm -f $(BINARIES)
